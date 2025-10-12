@@ -1,0 +1,29 @@
+name: keyboard_height
+version: 1.0.2
+description: Keyboard Height
+homepage: https://swipelab.com
+repository: https://github.com/swipelab/keyboard_height
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+  flutter: '>=3.22.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web: ^1.1.1
+  plugin_platform_interface: ^2.0.0
+  flutter_web_plugins:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.swipelab.keyboard_height
+        pluginClass: KeyboardHeightPlugin
+      ios:
+        pluginClass: KeyboardHeightPlugin
+      web:
+        pluginClass: KeyboardHeightWeb
+        fileName: keyboard_height_web.dart
