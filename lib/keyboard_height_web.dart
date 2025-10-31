@@ -51,7 +51,12 @@ Stream<Map<String, dynamic>> _keyboardHeightEventStream() {
     stream = _safariStream();
   }
 
-  return stream ?? const Stream.empty();
+  return stream ?? _fallbackStream();
+}
+
+Stream<Map<String, dynamic>> _fallbackStream() {
+  //TODO: implement
+  return const Stream.empty();
 }
 
 // Virtual Keyboard API implementation for Chrome/Firefox
