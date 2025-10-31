@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
+import 'dart:ui' as ui;
+import 'package:flutter/widgets.dart';
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 import 'package:keyboard_height/src/platform_interface/keyboard_height_platform_interface.dart';
 import 'package:web/web.dart' as web;
@@ -348,150 +350,145 @@ Stream<Map<String, dynamic>> _safariStream() {
   return controller.stream;
 }
 
-// Generic fallback implementation for other browsers
+// Helper class to observe metrics changes
+class _MetricsObserver extends WidgetsBindingObserver {
+  final VoidCallback onMetricsChanged;
+
+  _MetricsObserver(this.onMetricsChanged);
+
+  @override
+  void didChangeMetrics() {
+    onMetricsChanged();
+  }
+}
+
+// Generic fallback implementation using Flutter's viewInsets
 Stream<Map<String, dynamic>> _fallbackStream() {
-  print('fallback keyboard stream');
+  print('fallback keyboard stream (using Flutter viewInsets)');
   final controller = StreamController<Map<String, dynamic>>.broadcast();
 
-  // Check if we're on Android
-  final userAgent = web.window.navigator.userAgent.toLowerCase();
-  final isAndroid = userAgent.contains('android');
-
-  double? baselineHeight;
   double lastEmittedHeight = 0;
-  Timer? stabilizationTimer;
-  bool isStabilizing = false;
+  _MetricsObserver? observer;
+  double? initialViewportHeight;
+  double? lastKnownViewportHeight;
 
-  // Initialize baseline with current height
-  if (web.window.visualViewport != null) {
-    baselineHeight = web.window.visualViewport!.height.toDouble();
-    print('Initial baseline height: $baselineHeight');
-  } else {
-    baselineHeight = web.window.innerHeight.toDouble();
-    print('Initial baseline height (window): $baselineHeight');
+  // Get the primary view to access viewInsets
+  ui.FlutterView? getPrimaryView() {
+    try {
+      // Try to get the implicit view first (newer Flutter versions)
+      final implicitView = ui.PlatformDispatcher.instance.implicitView;
+      if (implicitView != null) return implicitView;
+
+      // Fallback to first view in the list
+      final views = ui.PlatformDispatcher.instance.views;
+      if (views.isNotEmpty) return views.first;
+
+      // No view available
+      return null;
+    } catch (e) {
+      print('Error getting primary view: $e');
+      return null;
+    }
   }
 
-  // Try visualViewport first, fallback to window resize
+  void checkKeyboardHeight() {
+    final view = getPrimaryView();
+    if (view == null) {
+      print('No Flutter view available');
+      return;
+    }
+
+    // Get the current viewport dimensions
+    final currentViewportHeight = view.physicalSize.height / view.devicePixelRatio;
+    final viewInsetsBottom = view.viewInsets.bottom / view.devicePixelRatio;
+
+    // Initialize the baseline viewport height (when keyboard is not shown)
+    if (initialViewportHeight == null) {
+      // On first run, if viewInsets is 0, we can use current height as baseline
+      if (viewInsetsBottom < 1) {
+        initialViewportHeight = currentViewportHeight;
+        lastKnownViewportHeight = currentViewportHeight;
+        print('Initial viewport height set to: $initialViewportHeight');
+      }
+    } else if (viewInsetsBottom < 1 && currentViewportHeight > lastKnownViewportHeight!) {
+      // Update baseline if viewport grew and no keyboard is showing
+      initialViewportHeight = currentViewportHeight;
+      print('Updated baseline viewport height to: $initialViewportHeight');
+    }
+
+    // Calculate keyboard height
+    double keyboardHeight = 0;
+
+    if (initialViewportHeight != null) {
+      // Method 1: Use viewInsets if available and reasonable
+      if (viewInsetsBottom > 0) {
+        keyboardHeight = viewInsetsBottom;
+      }
+      // Method 2: If viewport shrank, calculate difference from baseline
+      else if (currentViewportHeight < initialViewportHeight! - 40) {
+        keyboardHeight = initialViewportHeight! - currentViewportHeight;
+      }
+    } else {
+      // Fallback: just use viewInsets
+      keyboardHeight = viewInsetsBottom;
+    }
+
+    lastKnownViewportHeight = currentViewportHeight;
+
+    print('Viewport: current=$currentViewportHeight, initial=$initialViewportHeight, viewInsets=$viewInsetsBottom, calculated keyboard=$keyboardHeight');
+
+    // Only emit if there's a meaningful change
+    if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
+      final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+      final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
+      final duration = opening
+          ? 250
+          : closing
+              ? 200
+              : 150;
+
+      print('Emitting keyboard height: $keyboardHeight (was: $lastEmittedHeight)');
+      lastEmittedHeight = keyboardHeight;
+      controller.add({
+        'height': keyboardHeight,
+        'duration': duration,
+      });
+    }
+  }
+
+  // Create and register the metrics observer
+  observer = _MetricsObserver(() {
+    print('onMetricsChanged fired');
+    checkKeyboardHeight();
+  });
+
+  // Ensure WidgetsBinding is initialized
+  WidgetsBinding.instance.addObserver(observer);
+
+  // Also listen to visualViewport resize for immediate response
+  // This can fire before Flutter's metrics update on some browsers
   if (web.window.visualViewport != null) {
     web.window.visualViewport!.addEventListener(
         'resize',
         ((web.Event event) {
-          final vv = web.window.visualViewport!;
-          final currentHeight = vv.height.toDouble();
-          final windowHeight = web.window.innerHeight.toDouble();
-
-          print('visualViewport resize: current=$currentHeight, baseline=$baselineHeight, window=$windowHeight');
-
-          // For Android, use a more conservative baseline update strategy
-          if (isAndroid) {
-            // Cancel any pending stabilization
-            stabilizationTimer?.cancel();
-
-            // Only update baseline when:
-            // 1. We don't have a baseline yet
-            // 2. OR the height increased significantly (keyboard closing) AND we're not in a transition
-            if (baselineHeight == null) {
-              baselineHeight = currentHeight;
-              print('Setting initial baseline: $baselineHeight');
-            } else if (!isStabilizing &&
-                       currentHeight > baselineHeight! + 50 &&
-                       lastEmittedHeight > 0) {
-              // Keyboard seems to be closing, but wait for stabilization
-              isStabilizing = true;
-              stabilizationTimer = Timer(const Duration(milliseconds: 300), () {
-                // After stabilization, check if we should update baseline
-                final stabilizedHeight = web.window.visualViewport?.height.toDouble() ?? currentHeight;
-                if (stabilizedHeight > baselineHeight! && lastEmittedHeight == 0) {
-                  baselineHeight = stabilizedHeight;
-                  print('Baseline updated after stabilization: $baselineHeight');
-                }
-                isStabilizing = false;
-              });
-            }
-
-            // Use the established baseline for calculation
-            final obscured = ((baselineHeight ?? currentHeight) - currentHeight).clamp(0.0, baselineHeight ?? currentHeight);
-            final isKeyboardLikely = obscured > 40;
-            final keyboardHeight = isKeyboardLikely ? obscured : 0.0;
-
-            print('Android calculation: obscured=$obscured, keyboardHeight=$keyboardHeight');
-
-            // Only emit if there's a meaningful change
-            if ((keyboardHeight - lastEmittedHeight).abs() > 5) {
-              final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-              final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
-              final duration = opening
-                  ? 250
-                  : closing
-                      ? 200
-                      : 150;
-
-              print('Emitting height: $keyboardHeight (was: $lastEmittedHeight)');
-              lastEmittedHeight = keyboardHeight;
-              controller.add({
-                'height': keyboardHeight,
-                'duration': duration,
-              });
-            }
-          } else {
-            // Original logic for non-Android
-            if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
-              baselineHeight = currentHeight;
-            }
-            final base = (baselineHeight ?? currentHeight).toDouble();
-            final obscured = (base - currentHeight).clamp(0, base);
-
-            final isKeyboardLikely = obscured > 40;
-            final keyboardHeight = (isKeyboardLikely ? obscured : 0).toDouble();
-
-            if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
-              final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-              final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
-              final duration = opening
-                  ? 250
-                  : closing
-                      ? 200
-                      : 150;
-              lastEmittedHeight = keyboardHeight;
-              controller.add({
-                'height': keyboardHeight,
-                'duration': duration,
-              });
-            }
-          }
-        }).toJS);
-  } else {
-    // Fallback: Monitor window resize for browsers without visualViewport
-    web.window.addEventListener(
-        'resize',
-        ((web.Event event) {
-          final currentHeight = web.window.innerHeight.toDouble();
-
-          // Initialize baseline
-          if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
-            baselineHeight = currentHeight;
-          }
-
-          final obscured = (baselineHeight! - currentHeight).clamp(0, baselineHeight!);
-          final isKeyboardLikely = obscured > 40;
-          final keyboardHeight = (isKeyboardLikely ? obscured : 0).toDouble();
-
-          if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
-            final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-            final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
-            final duration = opening
-                ? 250
-                : closing
-                    ? 200
-                    : 150;
-            lastEmittedHeight = keyboardHeight;
-            controller.add({
-              'height': keyboardHeight,
-              'duration': duration,
-            });
-          }
+          // Small delay to let Flutter update its metrics
+          Future.delayed(const Duration(milliseconds: 50), () {
+            checkKeyboardHeight();
+          });
         }).toJS);
   }
+
+  // Cleanup listeners when stream is closed
+  controller.onCancel = () {
+    // Remove the metrics observer
+    if (observer != null) {
+      WidgetsBinding.instance.removeObserver(observer!);
+      observer = null;
+    }
+  };
+
+  // Check initial state
+  checkKeyboardHeight();
 
   return controller.stream;
 }
