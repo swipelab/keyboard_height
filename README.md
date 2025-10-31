@@ -8,7 +8,7 @@ Package on pub.dev: https://pub.dev/packages/keyboard_height
 
 ## Features
 
-- Provides the current keyboard height as a `ChangeNotifier`.
+- Provides the current keyboard height as a `ChangeNotifier`. on Web the keyboard height is reported as 0 when the viewport is scrolled by the browser.
 - Works seamlessly across mobile (iOS, Android) and Web.
 - A single, simple API for all platforms.
 

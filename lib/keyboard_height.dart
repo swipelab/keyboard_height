@@ -20,15 +20,17 @@ class KeyboardHeight with ChangeNotifier {
 
   double _height = 0.0;
   Duration _duration = Duration.zero;
+  bool _isOpen = false;
 
   double get height => _height;
   Duration get duration => _duration;
-  bool get isOpen => height > 0;
+  bool get isOpen => _isOpen;
 
   void _onEvent(dynamic event) {
     final map = Map<String, dynamic>.from(event as Map);
     _height = (map['height'] as num).toDouble();
     _duration = Duration(milliseconds: (map['duration'] as num).toInt());
+    _isOpen = map['open'] as bool? ?? _height > 0;
     notifyListeners();
   }
 }

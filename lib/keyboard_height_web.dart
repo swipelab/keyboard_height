@@ -20,7 +20,9 @@ class KeyboardHeightWeb extends KeyboardHeightPlatform {
 bool _isSafari() {
   final vendor = web.window.navigator.vendor;
   final userAgent = web.window.navigator.userAgent;
-  return vendor.contains('Apple') && !userAgent.contains('CriOS') && !userAgent.contains('FxiOS');
+  return vendor.contains('Apple') &&
+      !userAgent.contains('CriOS') &&
+      !userAgent.contains('FxiOS');
 }
 
 bool _supportsVirtualKeyboardAPI() {
@@ -42,20 +44,14 @@ Stream<Map<String, dynamic>> _keyboardHeightEventStream() {
   }
 
   Stream<Map<String, dynamic>>? stream;
-  // Use Virtual Keyboard API if available
-  if (_supportsVirtualKeyboardAPI()) {
-    stream = _virtualKeyboardAPIStream();
-  }
-  // Use Safari-specific implementation if on Safari
-  else if (_isSafari()) {
+
+  stream = _virtualKeyboardAPIStream();
+
+  if (stream == null && _isSafari()) {
     stream = _safariStream();
   }
-  // Fall back to generic implementation for other browsers
-  else {
-    stream = _fallbackStream();
-  }
 
-  return stream ?? const Stream.empty();
+  return stream ?? _fallbackStream();
 }
 
 // Fallback implementation for browsers without Virtual Keyboard API or visualViewport
@@ -66,7 +62,6 @@ Stream<Map<String, dynamic>> _fallbackStream() {
   double? initialWindowHeight;
   bool isInputFocused = false;
   Timer? periodicChecker;
-  web.Element? currentFocusedElement;
 
   // Store initial viewport dimensions
   initialWindowHeight = web.window.innerHeight.toDouble();
@@ -161,12 +156,13 @@ Stream<Map<String, dynamic>> _fallbackStream() {
         lastEmittedHeight = keyboardHeight;
         controller.add({
           'height': keyboardHeight,
-          'duration': 0,  // Always 0 in fallback stream - browser handles animations
-          'open': keyboardHeight > 0,  // Keyboard is open if height > 0
+          'duration':
+              0, // Always 0 in fallback stream - browser handles animations
+          'open': keyboardHeight > 0, // Keyboard is open if height > 0
         });
       }
     });
-  }  
+  }
 
   // Listen for focus events on input elements
   web.window.addEventListener(
@@ -175,10 +171,11 @@ Stream<Map<String, dynamic>> _fallbackStream() {
       final target = event.target;
       if (target != null &&
           (target.isA<web.HTMLInputElement>() ||
-           target.isA<web.HTMLTextAreaElement>() ||
-           (target.isA<web.Element>() && (target as web.Element).getAttribute('contenteditable') == 'true'))) {
+              target.isA<web.HTMLTextAreaElement>() ||
+              (target.isA<web.Element>() &&
+                  (target as web.Element).getAttribute('contenteditable') ==
+                      'true'))) {
         isInputFocused = true;
-        currentFocusedElement = target as web.Element;
 
         // Wait a bit for keyboard to appear and viewport to adjust
         Future.delayed(Duration(milliseconds: 300), () {
@@ -189,7 +186,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             lastEmittedHeight = keyboardHeight;
             controller.add({
               'height': keyboardHeight,
-              'duration': 0,  // Always 0 in fallback stream
+              'duration': 0, // Always 0 in fallback stream
               'open': keyboardHeight > 0,
             });
           }
@@ -208,8 +205,10 @@ Stream<Map<String, dynamic>> _fallbackStream() {
       final target = event.target;
       if (target != null &&
           (target.isA<web.HTMLInputElement>() ||
-           target.isA<web.HTMLTextAreaElement>() ||
-           (target.isA<web.Element>() && (target as web.Element).getAttribute('contenteditable') == 'true'))) {
+              target.isA<web.HTMLTextAreaElement>() ||
+              (target.isA<web.Element>() &&
+                  (target as web.Element).getAttribute('contenteditable') ==
+                      'true'))) {
         isInputFocused = false;
 
         // Cancel periodic checker
@@ -217,12 +216,13 @@ Stream<Map<String, dynamic>> _fallbackStream() {
 
         // Small delay to ensure keyboard starts closing
         Future.delayed(Duration(milliseconds: 100), () {
-          if (!isInputFocused) {  // Double-check no other input was focused
+          if (!isInputFocused) {
+            // Double-check no other input was focused
             lastEmittedHeight = 0;
             controller.add({
               'height': 0.0,
-              'duration': 0,  // Always 0 in fallback stream
-              'open': false,  // Keyboard is closed
+              'duration': 0, // Always 0 in fallback stream
+              'open': false, // Keyboard is closed
             });
           }
         });
@@ -243,8 +243,8 @@ Stream<Map<String, dynamic>> _fallbackStream() {
         lastEmittedHeight = 0;
         controller.add({
           'height': 0.0,
-          'duration': 0,  // Always 0 in fallback stream
-          'open': false,  // Keyboard is closed
+          'duration': 0, // Always 0 in fallback stream
+          'open': false, // Keyboard is closed
         });
       } else if (isInputFocused) {
         // Delay to let browser finish adjusting
@@ -256,7 +256,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             lastEmittedHeight = keyboardHeight;
             controller.add({
               'height': keyboardHeight,
-              'duration': 0,  // Always 0 in fallback stream
+              'duration': 0, // Always 0 in fallback stream
               'open': keyboardHeight > 0,
             });
           }
@@ -278,7 +278,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
           lastEmittedHeight = keyboardHeight;
           controller.add({
             'height': keyboardHeight,
-            'duration': 0,  // Always 0 in fallback stream
+            'duration': 0, // Always 0 in fallback stream
             'open': keyboardHeight > 0,
           });
         }
@@ -294,9 +294,10 @@ Stream<Map<String, dynamic>> _fallbackStream() {
       final target = event.target;
       if (target != null &&
           (target.isA<web.HTMLInputElement>() ||
-           target.isA<web.HTMLTextAreaElement>() ||
-           (target.isA<web.Element>() && (target as web.Element).getAttribute('contenteditable') == 'true'))) {
-
+              target.isA<web.HTMLTextAreaElement>() ||
+              (target.isA<web.Element>() &&
+                  (target as web.Element).getAttribute('contenteditable') ==
+                      'true'))) {
         // If input is already focused and keyboard is hidden,
         // clicking it again should trigger keyboard detection
         if (isInputFocused && lastEmittedHeight == 0) {
@@ -309,8 +310,8 @@ Stream<Map<String, dynamic>> _fallbackStream() {
               lastEmittedHeight = keyboardHeight;
               controller.add({
                 'height': keyboardHeight,
-                'duration': 0,  // Always 0 in fallback stream
-                'open': true,  // Keyboard is opening
+                'duration': 0, // Always 0 in fallback stream
+                'open': true, // Keyboard is opening
               });
             }
           });
@@ -334,7 +335,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             lastEmittedHeight = keyboardHeight;
             controller.add({
               'height': keyboardHeight,
-              'duration': 0,  // Always 0 in fallback stream
+              'duration': 0, // Always 0 in fallback stream
               'open': keyboardHeight > 0,
             });
           }
@@ -358,7 +359,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
           lastEmittedHeight = immediateHeight;
           controller.add({
             'height': immediateHeight,
-            'duration': 0,  // Always 0 in fallback stream
+            'duration': 0, // Always 0 in fallback stream
             'open': immediateHeight > 0,
           });
         }
@@ -372,7 +373,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             lastEmittedHeight = delayedHeight;
             controller.add({
               'height': delayedHeight,
-              'duration': 0,  // Always 0 in fallback stream
+              'duration': 0, // Always 0 in fallback stream
               'open': delayedHeight > 0,
             });
           }
@@ -399,6 +400,8 @@ Stream<Map<String, dynamic>> _fallbackStream() {
 
 // Virtual Keyboard API implementation for Chrome/Firefox
 Stream<Map<String, dynamic>>? _virtualKeyboardAPIStream() {
+  if (!_supportsVirtualKeyboardAPI()) return null;
+
   final controller = StreamController<Map<String, dynamic>>.broadcast();
   double previousHeight = 0;
 
@@ -420,50 +423,49 @@ Stream<Map<String, dynamic>>? _virtualKeyboardAPIStream() {
     final virtualKeyboard = navigatorJs['virtualKeyboard'] as JSObject?;
 
     if (virtualKeyboard != null) {
-      virtualKeyboard.callMethod('addEventListener'.toJS,
-        'geometrychange'.toJS,
-        ((JSObject event) {
+      virtualKeyboard.callMethod(
+          'addEventListener'.toJS,
+          'geometrychange'.toJS,
+          ((JSObject event) {
+            // Get the keyboard rect from the event
+            final boundingRect = event['boundingRect'] as JSObject?;
 
-          // Get the keyboard rect from the event
-          final boundingRect = event['boundingRect'] as JSObject?;
+            double keyboardHeight = 0;
+            double rawHeight = 0;
 
-          double keyboardHeight = 0;
-          double rawHeight = 0;
-
-          if (boundingRect != null) {
-            final height = boundingRect['height'];
-            if (height != null) {
-              rawHeight = (height as JSNumber).toDartDouble;
-              keyboardHeight = rawHeight;
+            if (boundingRect != null) {
+              final height = boundingRect['height'];
+              if (height != null) {
+                rawHeight = (height as JSNumber).toDartDouble;
+                keyboardHeight = rawHeight;
+              }
             }
-          }
 
-          // Additional sanity check: keyboard shouldn't be more than 60% of viewport
-          final maxReasonableHeight = web.window.innerHeight * 0.6;
-          if (keyboardHeight > maxReasonableHeight) {
-            // Don't return, just clamp it
-            keyboardHeight = maxReasonableHeight;
-          }
+            // Additional sanity check: keyboard shouldn't be more than 60% of viewport
+            final maxReasonableHeight = web.window.innerHeight * 0.6;
+            if (keyboardHeight > maxReasonableHeight) {
+              // Don't return, just clamp it
+              keyboardHeight = maxReasonableHeight;
+            }
 
-          // Only emit if there's an actual change
-          if ((keyboardHeight - previousHeight).abs() > 0.5) {
-            final opening = previousHeight == 0 && keyboardHeight > 0;
-            final closing = previousHeight > 0 && keyboardHeight == 0;
-            final duration = opening
-                ? 250
-                : closing
-                    ? 200
-                    : 150;
+            // Only emit if there's an actual change
+            if ((keyboardHeight - previousHeight).abs() > 0.5) {
+              final opening = previousHeight == 0 && keyboardHeight > 0;
+              final closing = previousHeight > 0 && keyboardHeight == 0;
+              final duration = opening
+                  ? 250
+                  : closing
+                      ? 200
+                      : 150;
 
-            previousHeight = keyboardHeight;
-            controller.add({
-              'height': keyboardHeight,
-              'duration': duration,
-              'open': keyboardHeight > 0,
-            });
-          }
-        }).toJS
-      );
+              previousHeight = keyboardHeight;
+              controller.add({
+                'height': keyboardHeight,
+                'duration': duration,
+                'open': keyboardHeight > 0,
+              });
+            }
+          }).toJS);
     }
   } catch (e) {
     null;
