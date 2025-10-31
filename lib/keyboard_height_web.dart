@@ -162,6 +162,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
         controller.add({
           'height': keyboardHeight,
           'duration': 0,  // Always 0 in fallback stream - browser handles animations
+          'open': keyboardHeight > 0,  // Keyboard is open if height > 0
         });
       }
     });
@@ -189,6 +190,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             controller.add({
               'height': keyboardHeight,
               'duration': 0,  // Always 0 in fallback stream
+              'open': keyboardHeight > 0,
             });
           }
 
@@ -220,6 +222,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             controller.add({
               'height': 0.0,
               'duration': 0,  // Always 0 in fallback stream
+              'open': false,  // Keyboard is closed
             });
           }
         });
@@ -241,6 +244,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
         controller.add({
           'height': 0.0,
           'duration': 0,  // Always 0 in fallback stream
+          'open': false,  // Keyboard is closed
         });
       } else if (isInputFocused) {
         // Delay to let browser finish adjusting
@@ -253,6 +257,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             controller.add({
               'height': keyboardHeight,
               'duration': 0,  // Always 0 in fallback stream
+              'open': keyboardHeight > 0,
             });
           }
         });
@@ -274,6 +279,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
           controller.add({
             'height': keyboardHeight,
             'duration': 0,  // Always 0 in fallback stream
+            'open': keyboardHeight > 0,
           });
         }
       }
@@ -304,6 +310,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
               controller.add({
                 'height': keyboardHeight,
                 'duration': 0,  // Always 0 in fallback stream
+                'open': true,  // Keyboard is opening
               });
             }
           });
@@ -328,6 +335,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             controller.add({
               'height': keyboardHeight,
               'duration': 0,  // Always 0 in fallback stream
+              'open': keyboardHeight > 0,
             });
           }
         });
@@ -351,6 +359,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
           controller.add({
             'height': immediateHeight,
             'duration': 0,  // Always 0 in fallback stream
+            'open': immediateHeight > 0,
           });
         }
 
@@ -364,6 +373,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             controller.add({
               'height': delayedHeight,
               'duration': 0,  // Always 0 in fallback stream
+              'open': delayedHeight > 0,
             });
           }
         });
@@ -449,6 +459,7 @@ Stream<Map<String, dynamic>>? _virtualKeyboardAPIStream() {
             controller.add({
               'height': keyboardHeight,
               'duration': duration,
+              'open': keyboardHeight > 0,
             });
           }
         }).toJS
@@ -499,6 +510,7 @@ Stream<Map<String, dynamic>> _safariStream() {
             controller.add({
               'height': keyboardHeight,
               'duration': duration,
+              'open': keyboardHeight > 0,
             });
           }
         }).toJS);
@@ -516,6 +528,7 @@ Stream<Map<String, dynamic>> _safariStream() {
               controller.add({
                 'height': 0.0,
                 'duration': 200,
+                'open': false,
               });
             }
           }
