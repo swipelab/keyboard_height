@@ -46,17 +46,248 @@ Stream<Map<String, dynamic>> _keyboardHeightEventStream() {
   if (_supportsVirtualKeyboardAPI()) {
     stream = _virtualKeyboardAPIStream();
   }
-
-  if (stream == null && _isSafari()) {
+  // Use Safari-specific implementation if on Safari
+  else if (_isSafari()) {
     stream = _safariStream();
   }
+  // Fall back to generic implementation for other browsers
+  else {
+    stream = _fallbackStream();
+  }
 
-  return stream ?? _fallbackStream();
+  return stream ?? const Stream.empty();
 }
 
+// Fallback implementation for browsers without Virtual Keyboard API or visualViewport
 Stream<Map<String, dynamic>> _fallbackStream() {
-  //TODO: implement
-  return const Stream.empty();
+  final controller = StreamController<Map<String, dynamic>>.broadcast();
+
+  double lastEmittedHeight = 0;
+  double? initialWindowHeight;
+  bool isInputFocused = false;
+  Timer? periodicChecker;
+
+  // Store initial viewport dimensions
+  initialWindowHeight = web.window.innerHeight.toDouble();
+
+  // Helper to calculate actual keyboard height accounting for viewport shift
+  double calculateActualKeyboardHeight() {
+    final currentWindowHeight = web.window.innerHeight.toDouble();
+
+    // Check if viewport has been resized (typical mobile browser behavior)
+    final viewportReduction = initialWindowHeight! - currentWindowHeight;
+
+    // Check if the page has been scrolled up
+    final scrollY = web.window.scrollY.toDouble();
+
+    // The actual keyboard height is the viewport reduction minus any scroll offset
+    // In cases where the viewport is pushed up, we want to report 0 or minimal height
+    // since the content is already adjusted by the browser
+    double keyboardHeight = 0;
+
+    if (viewportReduction > 50 && isInputFocused) {
+      // There's a significant viewport reduction and an input is focused
+      // This likely means keyboard is open
+
+      // Check if the page was scrolled to accommodate the keyboard
+      // If scrollY > 0, the browser has shifted content up
+      if (scrollY > 0) {
+        // Browser has shifted content, so effective obstruction is less
+        keyboardHeight = (viewportReduction - scrollY).clamp(0, viewportReduction);
+      } else {
+        // No scroll, full viewport reduction is the keyboard
+        keyboardHeight = viewportReduction;
+      }
+
+      // Additional check: if document height changed, browser might be adjusting layout
+      final currentDocHeight = web.document.body?.scrollHeight.toDouble() ?? 0;
+      final windowHeight = web.window.innerHeight.toDouble();
+
+      // If the document can be scrolled significantly, reduce reported height
+      if (currentDocHeight > windowHeight * 1.5) {
+        // Page is scrollable, browser will handle positioning
+        keyboardHeight = keyboardHeight * 0.3; // Report only 30% to avoid double-compensation
+      }
+    }
+
+    return keyboardHeight;
+  }
+
+  // Helper to start periodic checking for keyboard hide button
+  void startPeriodicChecker() {
+    periodicChecker?.cancel();
+
+    // Check every 200ms while input is focused
+    periodicChecker = Timer.periodic(Duration(milliseconds: 200), (timer) {
+      if (!isInputFocused) {
+        timer.cancel();
+        return;
+      }
+
+      final keyboardHeight = calculateActualKeyboardHeight();
+
+      // Detect any significant change in keyboard height
+      // This handles both:
+      // 1. Keyboard closed using hide button (height goes to 0)
+      // 2. Keyboard re-opened by tapping already-focused input (height increases)
+      if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
+        final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+        final closing = lastEmittedHeight > 0 && keyboardHeight < 10;
+        final duration = opening ? 250 : closing ? 200 : 150;
+
+        lastEmittedHeight = keyboardHeight;
+        controller.add({
+          'height': keyboardHeight,
+          'duration': duration,
+        });
+      }
+    });
+  }  
+
+  // Listen for focus events on input elements
+  web.window.addEventListener(
+    'focusin',
+    ((web.Event event) {
+      final target = event.target;
+      if (target != null &&
+          (target.isA<web.HTMLInputElement>() ||
+           target.isA<web.HTMLTextAreaElement>() ||
+           (target.isA<web.Element>() && (target as web.Element).getAttribute('contenteditable') == 'true'))) {
+        isInputFocused = true;
+
+        // Wait a bit for keyboard to appear and viewport to adjust
+        Future.delayed(Duration(milliseconds: 300), () {
+          final keyboardHeight = calculateActualKeyboardHeight();
+
+          if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
+            lastEmittedHeight = keyboardHeight;
+            controller.add({
+              'height': keyboardHeight,
+              'duration': 250,
+            });
+          }
+
+          // Start periodic checking to detect keyboard hide button
+          startPeriodicChecker();
+        });
+      }
+    }).toJS,
+  );
+
+  // Listen for blur events
+  web.window.addEventListener(
+    'focusout',
+    ((web.Event event) {
+      final target = event.target;
+      if (target != null &&
+          (target.isA<web.HTMLInputElement>() ||
+           target.isA<web.HTMLTextAreaElement>() ||
+           (target.isA<web.Element>() && (target as web.Element).getAttribute('contenteditable') == 'true'))) {
+        isInputFocused = false;
+
+        // Cancel periodic checker
+        periodicChecker?.cancel();
+
+        // Small delay to ensure keyboard starts closing
+        Future.delayed(Duration(milliseconds: 100), () {
+          if (!isInputFocused) {  // Double-check no other input was focused
+            lastEmittedHeight = 0;
+            controller.add({
+              'height': 0.0,
+              'duration': 200,
+            });
+          }
+        });
+      }
+    }).toJS,
+  );
+
+  // Listen for window resize events as backup
+  web.window.addEventListener(
+    'resize',
+    ((web.Event event) {
+      // Immediate check for significant changes
+      final keyboardHeight = calculateActualKeyboardHeight();
+
+      // If keyboard was hidden (viewport restored), update immediately
+      if (lastEmittedHeight > 0 && keyboardHeight < 10) {
+        lastEmittedHeight = 0;
+        controller.add({
+          'height': 0.0,
+          'duration': 200,
+        });
+      } else if (isInputFocused) {
+        // Delay to let browser finish adjusting
+        Future.delayed(Duration(milliseconds: 100), () {
+          final keyboardHeight = calculateActualKeyboardHeight();
+
+          if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
+            final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+            final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
+            final duration = opening ? 250 : closing ? 200 : 150;
+
+            lastEmittedHeight = keyboardHeight;
+            controller.add({
+              'height': keyboardHeight,
+              'duration': duration,
+            });
+          }
+        });
+      }
+    }).toJS,
+  );
+
+  // Listen for scroll events to detect viewport shifts
+  web.window.addEventListener(
+    'scroll',
+    ((web.Event event) {
+      if (isInputFocused && lastEmittedHeight > 0) {
+        // Recalculate when scrolling with keyboard open
+        final keyboardHeight = calculateActualKeyboardHeight();
+
+        if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
+          lastEmittedHeight = keyboardHeight;
+          controller.add({
+            'height': keyboardHeight,
+            'duration': 100,
+          });
+        }
+      }
+    }).toJS,
+  );
+
+  // Listen for click events on input elements to detect re-opening keyboard
+  // This handles the case where input is already focused but keyboard was hidden
+  web.window.addEventListener(
+    'click',
+    ((web.Event event) {
+      final target = event.target;
+      if (target != null &&
+          (target.isA<web.HTMLInputElement>() ||
+           target.isA<web.HTMLTextAreaElement>() ||
+           (target.isA<web.Element>() && (target as web.Element).getAttribute('contenteditable') == 'true'))) {
+
+        // If input is already focused and keyboard is hidden,
+        // clicking it again should trigger keyboard detection
+        if (isInputFocused && lastEmittedHeight == 0) {
+          // Wait for keyboard to appear
+          Future.delayed(Duration(milliseconds: 300), () {
+            final keyboardHeight = calculateActualKeyboardHeight();
+
+            if (keyboardHeight > 10) {
+              lastEmittedHeight = keyboardHeight;
+              controller.add({
+                'height': keyboardHeight,
+                'duration': 250,
+              });
+            }
+          });
+        }
+      }
+    }).toJS,
+  );
+
+  return controller.stream;
 }
 
 // Virtual Keyboard API implementation for Chrome/Firefox
