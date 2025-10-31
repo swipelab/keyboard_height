@@ -72,6 +72,7 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
   final controller = StreamController<Map<String, dynamic>>.broadcast();
   double previousHeight = 0;
   DateTime? lastEventTime;
+  int eventCount = 0;
 
   // Check if we're on Android
   final userAgent = web.window.navigator.userAgent.toLowerCase();
@@ -79,6 +80,12 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
 
   // Get device pixel ratio for Android Chrome
   final devicePixelRatio = web.window.devicePixelRatio;
+
+  // For Android, use fallback stream instead due to Virtual Keyboard API issues
+  if (isAndroid) {
+    print('Android detected, using fallback stream instead of Virtual Keyboard API');
+    return _fallbackStream();
+  }
 
   // Enable the Virtual Keyboard API overlay
   try {
@@ -101,11 +108,14 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
       virtualKeyboard.callMethod('addEventListener'.toJS,
         'geometrychange'.toJS,
         ((JSObject event) {
-          // Debounce rapid successive events (Android Chrome sometimes fires multiple)
+          eventCount++;
+
+          // Debounce rapid successive events
           final now = DateTime.now();
           if (lastEventTime != null &&
-              now.difference(lastEventTime!).inMilliseconds < 50) {
-            return; // Skip rapid successive events
+              now.difference(lastEventTime!).inMilliseconds < 100) {
+            print('Skipping rapid event #$eventCount (within 100ms)');
+            return;
           }
           lastEventTime = now;
 
@@ -113,33 +123,27 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
           final boundingRect = event['boundingRect'] as JSObject?;
 
           double keyboardHeight = 0;
+          double rawHeight = 0;
+
           if (boundingRect != null) {
             final height = boundingRect['height'];
             if (height != null) {
-              keyboardHeight = (height as JSNumber).toDartDouble;
+              rawHeight = (height as JSNumber).toDartDouble;
+              keyboardHeight = rawHeight;
 
-              // Android Chrome specific fix: Check if height needs adjustment
-              // The Virtual Keyboard API should return CSS pixels, but on some Android
-              // devices it might return physical pixels
-              if (isAndroid && devicePixelRatio > 1) {
-                // Check if the height seems unreasonably large (likely in physical pixels)
-                // Compare with viewport height to detect if conversion is needed
-                final viewportHeight = web.window.innerHeight.toDouble();
-                if (keyboardHeight > viewportHeight * 0.7) {
-                  // Height is suspiciously large, likely in physical pixels
-                  keyboardHeight = keyboardHeight / devicePixelRatio;
-                }
-              }
+              // Debug logging
+              final viewportHeight = web.window.innerHeight.toDouble();
+              final visualViewportHeight = web.window.visualViewport?.height.toDouble() ?? 0;
+              print('Event #$eventCount: rawHeight=$rawHeight, windowHeight=$viewportHeight, visualViewportHeight=$visualViewportHeight, devicePixelRatio=$devicePixelRatio');
             }
           }
 
           // Additional sanity check: keyboard shouldn't be more than 60% of viewport
           final maxReasonableHeight = web.window.innerHeight * 0.6;
           if (keyboardHeight > maxReasonableHeight) {
-            // Fall back to visualViewport method if height is unreasonable
-            print('Virtual Keyboard API returned unreasonable height: $keyboardHeight');
-            controller.close();
-            return;
+            print('Height unreasonable: $keyboardHeight > $maxReasonableHeight (60% of viewport)');
+            // Don't return, just clamp it
+            keyboardHeight = maxReasonableHeight;
           }
 
           // Only emit if there's an actual change
@@ -151,6 +155,8 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
                 : closing
                     ? 200
                     : 150;
+
+            print('Emitting height change: $previousHeight -> $keyboardHeight (opening=$opening, closing=$closing)');
             previousHeight = keyboardHeight;
             controller.add({
               'height': keyboardHeight,
@@ -161,6 +167,7 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
       );
     }
   } catch (e) {
+    print('Error setting up Virtual Keyboard API: $e');
     // If we can't add the event listener, fall back to generic implementation
     return _fallbackStream();
   }
