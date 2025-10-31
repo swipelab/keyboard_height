@@ -66,51 +66,74 @@ Stream<Map<String, dynamic>> _fallbackStream() {
   double? initialWindowHeight;
   bool isInputFocused = false;
   Timer? periodicChecker;
+  web.Element? currentFocusedElement;
 
   // Store initial viewport dimensions
   initialWindowHeight = web.window.innerHeight.toDouble();
 
   // Helper to calculate actual keyboard height accounting for viewport shift
   double calculateActualKeyboardHeight() {
+    // Check if the page has been scrolled up
+    final scrollY = web.window.scrollY.toDouble();
+
+    // If viewport has been shifted, report 0 - browser has already handled it
+    if (scrollY > 0) {
+      return 0;
+    }
+
     final currentWindowHeight = web.window.innerHeight.toDouble();
 
     // Check if viewport has been resized (typical mobile browser behavior)
     final viewportReduction = initialWindowHeight! - currentWindowHeight;
 
-    // Check if the page has been scrolled up
+    // Only report keyboard height if there's a significant reduction and no shift
+    if (viewportReduction > 50 && isInputFocused) {
+      // No scroll detected, return the full viewport reduction as keyboard height
+      return viewportReduction;
+    }
+
+    return 0;
+  }
+
+  // Enhanced check using visual viewport if available as fallback
+  double getKeyboardHeightWithVisualViewport() {
+    // Check for viewport shift first
     final scrollY = web.window.scrollY.toDouble();
 
-    // The actual keyboard height is the viewport reduction minus any scroll offset
-    // In cases where the viewport is pushed up, we want to report 0 or minimal height
-    // since the content is already adjusted by the browser
-    double keyboardHeight = 0;
+    // If viewport has been shifted, report 0 - browser has already handled it
+    if (scrollY > 0) {
+      return 0;
+    }
 
-    if (viewportReduction > 50 && isInputFocused) {
-      // There's a significant viewport reduction and an input is focused
-      // This likely means keyboard is open
+    // Try visual viewport as additional check (may be available even if not Safari)
+    if (web.window.visualViewport != null) {
+      final vv = web.window.visualViewport!;
+      final visualHeight = vv.height.toDouble();
+      final windowHeight = web.window.innerHeight.toDouble();
+      final visualScrollY = vv.pageTop.toDouble();
 
-      // Check if the page was scrolled to accommodate the keyboard
-      // If scrollY > 0, the browser has shifted content up
-      if (scrollY > 0) {
-        // Browser has shifted content, so effective obstruction is less
-        keyboardHeight = (viewportReduction - scrollY).clamp(0, viewportReduction);
-      } else {
-        // No scroll, full viewport reduction is the keyboard
-        keyboardHeight = viewportReduction;
+      // If visual viewport has been shifted, report 0
+      if (visualScrollY > 0) {
+        return 0;
       }
 
-      // Additional check: if document height changed, browser might be adjusting layout
-      final currentDocHeight = web.document.body?.scrollHeight.toDouble() ?? 0;
-      final windowHeight = web.window.innerHeight.toDouble();
-
-      // If the document can be scrolled significantly, reduce reported height
-      if (currentDocHeight > windowHeight * 1.5) {
-        // Page is scrollable, browser will handle positioning
-        keyboardHeight = keyboardHeight * 0.3; // Report only 30% to avoid double-compensation
+      // Visual viewport might give us better info on Android Chrome
+      if (visualHeight < windowHeight && isInputFocused) {
+        // No shift detected, return the actual keyboard height
+        return windowHeight - visualHeight;
       }
     }
 
-    return keyboardHeight;
+    return calculateActualKeyboardHeight();
+  }
+
+  // Force a reflow/recalculation on Android Chrome
+  void forceViewportUpdate() {
+    // Android Chrome sometimes needs a nudge to update viewport measurements
+    // Reading certain properties can trigger a reflow
+    web.document.documentElement?.getBoundingClientRect();
+    web.window.innerHeight;
+    web.window.visualViewport?.height;
   }
 
   // Helper to start periodic checking for keyboard hide button
@@ -124,21 +147,21 @@ Stream<Map<String, dynamic>> _fallbackStream() {
         return;
       }
 
-      final keyboardHeight = calculateActualKeyboardHeight();
+      // Force viewport update for Android Chrome
+      forceViewportUpdate();
+
+      // Use enhanced detection with visual viewport fallback
+      final keyboardHeight = getKeyboardHeightWithVisualViewport();
 
       // Detect any significant change in keyboard height
       // This handles both:
       // 1. Keyboard closed using hide button (height goes to 0)
       // 2. Keyboard re-opened by tapping already-focused input (height increases)
       if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
-        final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-        final closing = lastEmittedHeight > 0 && keyboardHeight < 10;
-        final duration = opening ? 250 : closing ? 200 : 150;
-
         lastEmittedHeight = keyboardHeight;
         controller.add({
           'height': keyboardHeight,
-          'duration': duration,
+          'duration': 0,  // Always 0 in fallback stream - browser handles animations
         });
       }
     });
@@ -154,16 +177,18 @@ Stream<Map<String, dynamic>> _fallbackStream() {
            target.isA<web.HTMLTextAreaElement>() ||
            (target.isA<web.Element>() && (target as web.Element).getAttribute('contenteditable') == 'true'))) {
         isInputFocused = true;
+        currentFocusedElement = target as web.Element;
 
         // Wait a bit for keyboard to appear and viewport to adjust
         Future.delayed(Duration(milliseconds: 300), () {
-          final keyboardHeight = calculateActualKeyboardHeight();
+          forceViewportUpdate();
+          final keyboardHeight = getKeyboardHeightWithVisualViewport();
 
           if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
             lastEmittedHeight = keyboardHeight;
             controller.add({
               'height': keyboardHeight,
-              'duration': 250,
+              'duration': 0,  // Always 0 in fallback stream
             });
           }
 
@@ -194,7 +219,7 @@ Stream<Map<String, dynamic>> _fallbackStream() {
             lastEmittedHeight = 0;
             controller.add({
               'height': 0.0,
-              'duration': 200,
+              'duration': 0,  // Always 0 in fallback stream
             });
           }
         });
@@ -207,29 +232,27 @@ Stream<Map<String, dynamic>> _fallbackStream() {
     'resize',
     ((web.Event event) {
       // Immediate check for significant changes
-      final keyboardHeight = calculateActualKeyboardHeight();
+      forceViewportUpdate();
+      final keyboardHeight = getKeyboardHeightWithVisualViewport();
 
       // If keyboard was hidden (viewport restored), update immediately
       if (lastEmittedHeight > 0 && keyboardHeight < 10) {
         lastEmittedHeight = 0;
         controller.add({
           'height': 0.0,
-          'duration': 200,
+          'duration': 0,  // Always 0 in fallback stream
         });
       } else if (isInputFocused) {
         // Delay to let browser finish adjusting
         Future.delayed(Duration(milliseconds: 100), () {
-          final keyboardHeight = calculateActualKeyboardHeight();
+          forceViewportUpdate();
+          final keyboardHeight = getKeyboardHeightWithVisualViewport();
 
           if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
-            final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-            final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
-            final duration = opening ? 250 : closing ? 200 : 150;
-
             lastEmittedHeight = keyboardHeight;
             controller.add({
               'height': keyboardHeight,
-              'duration': duration,
+              'duration': 0,  // Always 0 in fallback stream
             });
           }
         });
@@ -241,15 +264,16 @@ Stream<Map<String, dynamic>> _fallbackStream() {
   web.window.addEventListener(
     'scroll',
     ((web.Event event) {
-      if (isInputFocused && lastEmittedHeight > 0) {
-        // Recalculate when scrolling with keyboard open
-        final keyboardHeight = calculateActualKeyboardHeight();
+      if (isInputFocused) {
+        // Recalculate when scrolling - viewport shift affects effective keyboard height
+        forceViewportUpdate();
+        final keyboardHeight = getKeyboardHeightWithVisualViewport();
 
         if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
           lastEmittedHeight = keyboardHeight;
           controller.add({
             'height': keyboardHeight,
-            'duration': 100,
+            'duration': 0,  // Always 0 in fallback stream
           });
         }
       }
@@ -272,18 +296,91 @@ Stream<Map<String, dynamic>> _fallbackStream() {
         if (isInputFocused && lastEmittedHeight == 0) {
           // Wait for keyboard to appear
           Future.delayed(Duration(milliseconds: 300), () {
-            final keyboardHeight = calculateActualKeyboardHeight();
+            forceViewportUpdate();
+            final keyboardHeight = getKeyboardHeightWithVisualViewport();
 
             if (keyboardHeight > 10) {
               lastEmittedHeight = keyboardHeight;
               controller.add({
                 'height': keyboardHeight,
-                'duration': 250,
+                'duration': 0,  // Always 0 in fallback stream
               });
             }
           });
         }
       }
+    }).toJS,
+  );
+
+  // Listen for input events - Android Chrome sometimes updates viewport after input changes
+  web.window.addEventListener(
+    'input',
+    ((web.Event event) {
+      if (isInputFocused) {
+        // Delay briefly to let viewport adjust after input
+        Future.delayed(Duration(milliseconds: 50), () {
+          forceViewportUpdate();
+          final keyboardHeight = getKeyboardHeightWithVisualViewport();
+
+          // Check if keyboard state changed significantly
+          if ((keyboardHeight - lastEmittedHeight).abs() > 10) {
+            lastEmittedHeight = keyboardHeight;
+            controller.add({
+              'height': keyboardHeight,
+              'duration': 0,  // Always 0 in fallback stream
+            });
+          }
+        });
+      }
+    }).toJS,
+  );
+
+  // Listen for touchstart events - can help detect viewport changes on Android
+  web.window.addEventListener(
+    'touchstart',
+    ((web.Event event) {
+      if (isInputFocused) {
+        // Force viewport recalculation on touch
+        forceViewportUpdate();
+
+        // Check keyboard state immediately and after a delay
+        final immediateHeight = getKeyboardHeightWithVisualViewport();
+
+        if ((immediateHeight - lastEmittedHeight).abs() > 10) {
+          lastEmittedHeight = immediateHeight;
+          controller.add({
+            'height': immediateHeight,
+            'duration': 0,  // Always 0 in fallback stream
+          });
+        }
+
+        // Also check after a delay in case viewport updates slowly
+        Future.delayed(Duration(milliseconds: 100), () {
+          forceViewportUpdate();
+          final delayedHeight = getKeyboardHeightWithVisualViewport();
+
+          if ((delayedHeight - lastEmittedHeight).abs() > 10) {
+            lastEmittedHeight = delayedHeight;
+            controller.add({
+              'height': delayedHeight,
+              'duration': 0,  // Always 0 in fallback stream
+            });
+          }
+        });
+      }
+    }).toJS,
+  );
+
+  // Listen for orientationchange events - can affect keyboard detection
+  web.window.addEventListener(
+    'orientationchange',
+    ((web.Event event) {
+      // Reset initial height on orientation change
+      Future.delayed(Duration(milliseconds: 500), () {
+        if (!isInputFocused) {
+          initialWindowHeight = web.window.innerHeight.toDouble();
+        }
+      });
     }).toJS,
   );
 
