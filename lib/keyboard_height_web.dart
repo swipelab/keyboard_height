@@ -41,7 +41,17 @@ Stream<Map<String, dynamic>> _keyboardHeightEventStream() {
     return const Stream.empty();
   }
 
-  // Use Virtual Keyboard API for Chrome/Firefox if available
+  // Check if we're on Android Chrome
+  final userAgent = web.window.navigator.userAgent.toLowerCase();
+  final isAndroidChrome = userAgent.contains('android') && userAgent.contains('chrome');
+
+  // For Android Chrome, prefer visualViewport due to Virtual Keyboard API issues
+  // The API sometimes reports double height or physical pixels instead of CSS pixels
+  if (isAndroidChrome) {
+    return _visualViewportStream();
+  }
+
+  // Use Virtual Keyboard API for desktop Chrome/Firefox if available
   if (!_isSafari() && _supportsVirtualKeyboardAPI()) {
     return _virtualKeyboardAPIStream();
   }
@@ -54,6 +64,14 @@ Stream<Map<String, dynamic>> _keyboardHeightEventStream() {
 Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
   final controller = StreamController<Map<String, dynamic>>.broadcast();
   double previousHeight = 0;
+  DateTime? lastEventTime;
+
+  // Check if we're on Android
+  final userAgent = web.window.navigator.userAgent.toLowerCase();
+  final isAndroid = userAgent.contains('android');
+
+  // Get device pixel ratio for Android Chrome
+  final devicePixelRatio = web.window.devicePixelRatio;
 
   // Enable the Virtual Keyboard API overlay
   try {
@@ -76,6 +94,14 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
       virtualKeyboard.callMethod('addEventListener'.toJS,
         'geometrychange'.toJS,
         ((JSObject event) {
+          // Debounce rapid successive events (Android Chrome sometimes fires multiple)
+          final now = DateTime.now();
+          if (lastEventTime != null &&
+              now.difference(lastEventTime!).inMilliseconds < 50) {
+            return; // Skip rapid successive events
+          }
+          lastEventTime = now;
+
           // Get the keyboard rect from the event
           final boundingRect = event['boundingRect'] as JSObject?;
 
@@ -84,23 +110,46 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
             final height = boundingRect['height'];
             if (height != null) {
               keyboardHeight = (height as JSNumber).toDartDouble;
+
+              // Android Chrome specific fix: Check if height needs adjustment
+              // The Virtual Keyboard API should return CSS pixels, but on some Android
+              // devices it might return physical pixels
+              if (isAndroid && devicePixelRatio > 1) {
+                // Check if the height seems unreasonably large (likely in physical pixels)
+                // Compare with viewport height to detect if conversion is needed
+                final viewportHeight = web.window.innerHeight.toDouble();
+                if (keyboardHeight > viewportHeight * 0.7) {
+                  // Height is suspiciously large, likely in physical pixels
+                  keyboardHeight = keyboardHeight / devicePixelRatio;
+                }
+              }
             }
           }
 
-          // For Chrome/Firefox, emit all changes directly from the Virtual Keyboard API
-          // No filtering needed as the API provides accurate measurements
-          final opening = previousHeight == 0 && keyboardHeight > 0;
-          final closing = previousHeight > 0 && keyboardHeight == 0;
-          final duration = opening
-              ? 250
-              : closing
-                  ? 200
-                  : 150;
-          previousHeight = keyboardHeight;
-          controller.add({
-            'height': keyboardHeight,
-            'duration': duration,
-          });
+          // Additional sanity check: keyboard shouldn't be more than 60% of viewport
+          final maxReasonableHeight = web.window.innerHeight * 0.6;
+          if (keyboardHeight > maxReasonableHeight) {
+            // Fall back to visualViewport method if height is unreasonable
+            print('Virtual Keyboard API returned unreasonable height: $keyboardHeight');
+            controller.close();
+            return;
+          }
+
+          // Only emit if there's an actual change
+          if ((keyboardHeight - previousHeight).abs() > 0.5) {
+            final opening = previousHeight == 0 && keyboardHeight > 0;
+            final closing = previousHeight > 0 && keyboardHeight == 0;
+            final duration = opening
+                ? 250
+                : closing
+                    ? 200
+                    : 150;
+            previousHeight = keyboardHeight;
+            controller.add({
+              'height': keyboardHeight,
+              'duration': duration,
+            });
+          }
         }).toJS
       );
     }
@@ -118,6 +167,23 @@ Stream<Map<String, dynamic>> _visualViewportStream() {
 
   double? baselineHeight; // visualViewport height when keyboard closed
   double lastEmittedHeight = 0;
+  bool hasEstablishedBaseline = false;
+
+  // Check if we're on Android
+  final userAgent = web.window.navigator.userAgent.toLowerCase();
+  final isAndroid = userAgent.contains('android');
+
+  // Initialize baseline with current viewport height
+  // This should be the height without keyboard
+  if (web.window.visualViewport != null) {
+    baselineHeight = web.window.visualViewport!.height.toDouble();
+    // On Android, use the window inner height as initial baseline
+    // as it's more stable than visualViewport
+    if (isAndroid) {
+      baselineHeight = web.window.innerHeight.toDouble();
+    }
+    hasEstablishedBaseline = true;
+  }
 
   web.window.visualViewport?.addEventListener(
       'resize',
@@ -127,11 +193,26 @@ Stream<Map<String, dynamic>> _visualViewportStream() {
 
         final currentHeight = vv.height.toDouble();
 
-        // Establish baseline (largest observed height) when no keyboard.
-        if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
-          baselineHeight = currentHeight;
+        // For Android, be more conservative about updating baseline
+        if (isAndroid && hasEstablishedBaseline) {
+          // Only update baseline if:
+          // 1. Current height is larger (keyboard closing)
+          // 2. AND the difference is significant (> 100px)
+          // 3. AND we previously detected a keyboard (lastEmittedHeight > 0)
+          if (currentHeight > (baselineHeight ?? 0) &&
+              (currentHeight - (baselineHeight ?? 0)) > 100 &&
+              lastEmittedHeight > 0) {
+            baselineHeight = currentHeight;
+          }
+        } else if (!isAndroid) {
+          // Original logic for non-Android devices
+          if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
+            baselineHeight = currentHeight;
+          }
         }
-        final base = (baselineHeight ?? currentHeight).toDouble();
+
+        // Use the established baseline
+        final base = baselineHeight ?? currentHeight;
         final obscured = (base - currentHeight).clamp(0, base);
 
         // Heuristic filter: ignore tiny changes (< 40 logical px)
@@ -170,6 +251,26 @@ Stream<Map<String, dynamic>> _visualViewportStream() {
                 'duration': 200,
               });
             }
+          }
+        }).toJS);
+  }
+
+  // For Android, also reset baseline on focus to prevent accumulation
+  if (isAndroid) {
+    web.window.addEventListener(
+        'focusin',
+        ((web.Event event) {
+          final target = event.target;
+          if (target.isA<web.HTMLInputElement>() ||
+              target.isA<web.HTMLTextAreaElement>()) {
+            // Reset baseline when focusing an input
+            // Use a small delay to let the viewport settle
+            Future.delayed(const Duration(milliseconds: 100), () {
+              if (web.window.visualViewport != null && lastEmittedHeight == 0) {
+                // Only reset if keyboard is not currently shown
+                baselineHeight = web.window.innerHeight.toDouble();
+              }
+            });
           }
         }).toJS);
   }
