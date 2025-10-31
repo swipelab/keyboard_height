@@ -41,27 +41,34 @@ Stream<Map<String, dynamic>> _keyboardHeightEventStream() {
     return const Stream.empty();
   }
 
-  // Check if we're on Android Chrome
-  final userAgent = web.window.navigator.userAgent.toLowerCase();
-  final isAndroidChrome = userAgent.contains('android') && userAgent.contains('chrome');
+  final isSafari = _isSafari();
 
-  // For Android Chrome, prefer visualViewport due to Virtual Keyboard API issues
-  // The API sometimes reports double height or physical pixels instead of CSS pixels
-  if (isAndroidChrome) {
-    return _visualViewportStream();
+
+  if (isSafari) {
+    return _safariStream();
   }
 
   // Use Virtual Keyboard API for desktop Chrome/Firefox if available
-  if (!_isSafari() && _supportsVirtualKeyboardAPI()) {
+  if (_supportsVirtualKeyboardAPI()) {
     return _virtualKeyboardAPIStream();
   }
 
-  // Fall back to visualViewport method for Safari and browsers without Virtual Keyboard API
-  return _visualViewportStream();
+  //  // Check browser type
+  // final userAgent = web.window.navigator.userAgent.toLowerCase();
+  // final isAndroidChrome = userAgent.contains('android') && userAgent.contains('chrome');
+  //  // Route to appropriate implementation
+  // if (isAndroidChrome) {
+  //   return _androidChromeStream();
+  // }
+
+
+  // Fall back to generic implementation
+  return _fallbackStream();
 }
 
 // Virtual Keyboard API implementation for Chrome/Firefox
 Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
+  print('virtual keyboard stream');
   final controller = StreamController<Map<String, dynamic>>.broadcast();
   double previousHeight = 0;
   DateTime? lastEventTime;
@@ -81,8 +88,8 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
       virtualKeyboard['overlaysContent'] = true.toJS;
     }
   } catch (e) {
-    // If we can't enable overlay, fall back to visualViewport
-    return _visualViewportStream();
+    // If we can't enable overlay, fall back to generic implementation
+    return _fallbackStream();
   }
 
   // Listen to geometrychange event
@@ -154,8 +161,8 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
       );
     }
   } catch (e) {
-    // If we can't add the event listener, fall back to visualViewport
-    return _visualViewportStream();
+    // If we can't add the event listener, fall back to generic implementation
+    return _fallbackStream();
   }
 
   return controller.stream;
@@ -250,78 +257,70 @@ Stream<Map<String, dynamic>> _androidChromeStream() {
     });
   }
 
-  // Listen to visualViewport resize events
-  web.window.visualViewport?.addEventListener(
-      'resize',
-      ((web.Event event) {
-        checkKeyboardHeight();
-      }).toJS);
-
-  // Also listen to window resize as backup
-  web.window.addEventListener(
-      'resize',
-      ((web.Event event) {
-        checkKeyboardHeight();
-      }).toJS);
+  // Listen to visualViewport resize if available, otherwise window resize
+  if (web.window.visualViewport != null) {
+    web.window.visualViewport!.addEventListener(
+        'resize',
+        ((web.Event event) {
+          checkKeyboardHeight();
+        }).toJS);
+  } else {
+    // Fallback to window resize if visualViewport is not available
+    web.window.addEventListener(
+        'resize',
+        ((web.Event event) {
+          checkKeyboardHeight();
+        }).toJS);
+  }
 
   return controller.stream;
 }
 
-// Original visualViewport implementation for Safari and fallback
-Stream<Map<String, dynamic>> _visualViewportStream() {
+// Safari-specific implementation with focusout workaround
+Stream<Map<String, dynamic>> _safariStream() {
+  print('safari stream');
   final controller = StreamController<Map<String, dynamic>>.broadcast();
 
-  // Check if we're on Android
-  final userAgent = web.window.navigator.userAgent.toLowerCase();
-  final isAndroid = userAgent.contains('android');
-
-  if (isAndroid) {
-    // Use a simpler, more reliable approach for Android
-    return _androidChromeStream();
-  }
-
-  // Original implementation for non-Android devices
   double? baselineHeight; // visualViewport height when keyboard closed
   double lastEmittedHeight = 0;
 
-  web.window.visualViewport?.addEventListener(
-      'resize',
-      ((web.Event event) {
-        final vv = web.window.visualViewport;
-        if (vv == null) return;
+  // Use visualViewport for Safari if available
+  if (web.window.visualViewport != null) {
+    web.window.visualViewport!.addEventListener(
+        'resize',
+        ((web.Event event) {
+          final vv = web.window.visualViewport!;
+          final currentHeight = vv.height.toDouble();
 
-        final currentHeight = vv.height.toDouble();
+          // Establish baseline (largest observed height) when no keyboard.
+          if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
+            baselineHeight = currentHeight;
+          }
+          final base = (baselineHeight ?? currentHeight).toDouble();
+          final obscured = (base - currentHeight).clamp(0, base);
 
-        // Establish baseline (largest observed height) when no keyboard.
-        if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
-          baselineHeight = currentHeight;
-        }
-        final base = (baselineHeight ?? currentHeight).toDouble();
-        final obscured = (base - currentHeight).clamp(0, base);
+          // Heuristic filter: ignore tiny changes (< 40 logical px)
+          final isKeyboardLikely = obscured > 40;
+          final keyboardHeight = (isKeyboardLikely ? obscured : 0).toDouble();
 
-        // Heuristic filter: ignore tiny changes (< 40 logical px)
-        final isKeyboardLikely = obscured > 40;
-        final keyboardHeight = (isKeyboardLikely ? obscured : 0).toDouble();
+          if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
+            final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+            final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
+            final duration = opening
+                ? 250
+                : closing
+                    ? 200
+                    : 150;
+            lastEmittedHeight = keyboardHeight;
+            controller.add({
+              'height': keyboardHeight,
+              'duration': duration,
+            });
+          }
+        }).toJS);
 
-        if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
-          final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-          final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
-          final duration = opening
-              ? 250
-              : closing
-                  ? 200
-                  : 150; // mid adjustments if any
-          lastEmittedHeight = keyboardHeight;
-          controller.add({
-            'height': keyboardHeight,
-            'duration': duration,
-          });
-        }
-      }).toJS);
-
-  // On Safari, the 'resize' event for keyboard closing is delayed.
-  // We can listen to 'focusout' on input elements to anticipate it.
-  if (_isSafari()) {
+    // On Safari, the 'resize' event for keyboard closing is delayed.
+    // We can listen to 'focusout' on input elements to anticipate it.
     web.window.addEventListener(
         'focusout',
         ((web.Event event) {
@@ -339,21 +338,79 @@ Stream<Map<String, dynamic>> _visualViewportStream() {
         }).toJS);
   }
 
-  // For Android, also reset baseline on focus to prevent accumulation
-  if (isAndroid) {
-    web.window.addEventListener(
-        'focusin',
+  return controller.stream;
+}
+
+// Generic fallback implementation for other browsers
+Stream<Map<String, dynamic>> _fallbackStream() {
+  print('fallback keyboard stream');
+  final controller = StreamController<Map<String, dynamic>>.broadcast();
+
+  double? baselineHeight;
+  double lastEmittedHeight = 0;
+
+  // Try visualViewport first, fallback to window resize
+  if (web.window.visualViewport != null) {
+    web.window.visualViewport!.addEventListener(
+        'resize',
         ((web.Event event) {
-          final target = event.target;
-          if (target.isA<web.HTMLInputElement>() ||
-              target.isA<web.HTMLTextAreaElement>()) {
-            // Reset baseline when focusing an input
-            // Use a small delay to let the viewport settle
-            Future.delayed(const Duration(milliseconds: 100), () {
-              if (web.window.visualViewport != null && lastEmittedHeight == 0) {
-                // Only reset if keyboard is not currently shown
-                baselineHeight = web.window.innerHeight.toDouble();
-              }
+          final vv = web.window.visualViewport!;
+          final currentHeight = vv.height.toDouble();
+
+          // Establish baseline (largest observed height) when no keyboard.
+          if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
+            baselineHeight = currentHeight;
+          }
+          final base = (baselineHeight ?? currentHeight).toDouble();
+          final obscured = (base - currentHeight).clamp(0, base);
+
+          // Heuristic filter: ignore tiny changes (< 40 logical px)
+          final isKeyboardLikely = obscured > 40;
+          final keyboardHeight = (isKeyboardLikely ? obscured : 0).toDouble();
+
+          if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
+            final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+            final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
+            final duration = opening
+                ? 250
+                : closing
+                    ? 200
+                    : 150;
+            lastEmittedHeight = keyboardHeight;
+            controller.add({
+              'height': keyboardHeight,
+              'duration': duration,
+            });
+          }
+        }).toJS);
+  } else {
+    // Fallback: Monitor window resize for browsers without visualViewport
+    web.window.addEventListener(
+        'resize',
+        ((web.Event event) {
+          final currentHeight = web.window.innerHeight.toDouble();
+
+          // Initialize baseline
+          if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
+            baselineHeight = currentHeight;
+          }
+
+          final obscured = (baselineHeight! - currentHeight).clamp(0, baselineHeight!);
+          final isKeyboardLikely = obscured > 40;
+          final keyboardHeight = (isKeyboardLikely ? obscured : 0).toDouble();
+
+          if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
+            final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+            final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
+            final duration = opening
+                ? 250
+                : closing
+                    ? 200
+                    : 150;
+            lastEmittedHeight = keyboardHeight;
+            controller.add({
+              'height': keyboardHeight,
+              'duration': duration,
             });
           }
         }).toJS);
