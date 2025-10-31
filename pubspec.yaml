@@ -1,5 +1,5 @@
 name: keyboard_height
-version: 1.0.5
+version: 1.0.6
 description: Keyboard Height
 homepage: https://swipelab.com
 repository: https://github.com/swipelab/keyboard_height
@@ -28,11 +28,11 @@ flutter:
         pluginClass: KeyboardHeightWeb
         fileName: keyboard_height_web.dart
       macos:
-        dartPluginClass: KeyboardHeightMacOS
+        pluginClass: KeyboardHeightMacOS
         fileName: keyboard_height_macos.dart
       linux:
-        dartPluginClass: KeyboardHeightLinux
+        pluginClass: KeyboardHeightLinux
         fileName: keyboard_height_linux.dart
       windows:
-        dartPluginClass: KeyboardHeightWindows
+        pluginClass: KeyboardHeightWindows
         fileName: keyboard_height_windows.dart

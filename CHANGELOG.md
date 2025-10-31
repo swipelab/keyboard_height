@@ -1,3 +1,6 @@
+## [1.0.6]
+- Finished Web (VirtualKeyboard API, Safari and Fallback for older browsers)
+
 ## [1.0.4]
 - WIP web
 
