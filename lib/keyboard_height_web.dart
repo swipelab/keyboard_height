@@ -161,29 +161,128 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
   return controller.stream;
 }
 
+// Specialized implementation for Android Chrome
+Stream<Map<String, dynamic>> _androidChromeStream() {
+  final controller = StreamController<Map<String, dynamic>>.broadcast();
+
+  double lastEmittedHeight = 0;
+  Timer? debounceTimer;
+
+  // Track focus state
+  bool isInputFocused = false;
+
+  // Listen to focus events to track input state
+  web.window.addEventListener(
+      'focusin',
+      ((web.Event event) {
+        final target = event.target;
+        if (target.isA<web.HTMLInputElement>() ||
+            target.isA<web.HTMLTextAreaElement>()) {
+          isInputFocused = true;
+        }
+      }).toJS);
+
+  web.window.addEventListener(
+      'focusout',
+      ((web.Event event) {
+        final target = event.target;
+        if (target.isA<web.HTMLInputElement>() ||
+            target.isA<web.HTMLTextAreaElement>()) {
+          isInputFocused = false;
+          // Immediately emit 0 height when input loses focus
+          if (lastEmittedHeight > 0) {
+            lastEmittedHeight = 0;
+            controller.add({
+              'height': 0.0,
+              'duration': 200,
+            });
+          }
+        }
+      }).toJS);
+
+  // Use both visualViewport and window resize events for Android
+  void checkKeyboardHeight() {
+    debounceTimer?.cancel();
+    debounceTimer = Timer(const Duration(milliseconds: 50), () {
+      final vv = web.window.visualViewport;
+      if (vv == null) return;
+
+      final visualViewportHeight = vv.height.toDouble();
+      final windowHeight = web.window.innerHeight.toDouble();
+
+      // Calculate keyboard height as difference between window and visual viewport
+      // This is more reliable on Android than trying to track baseline
+      double keyboardHeight = 0;
+
+      if (isInputFocused) {
+        // When input is focused, calculate keyboard height
+        // The keyboard height is the difference between window height and visual viewport
+        final heightDiff = windowHeight - visualViewportHeight;
+
+        // Only consider it a keyboard if the difference is significant
+        if (heightDiff > 40) {
+          keyboardHeight = heightDiff;
+
+          // Sanity check - keyboard shouldn't be more than 50% of window height
+          if (keyboardHeight > windowHeight * 0.5) {
+            keyboardHeight = windowHeight * 0.5;
+          }
+        }
+      }
+
+      // Only emit if there's a meaningful change
+      if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
+        final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+        final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
+        final duration = opening
+            ? 250
+            : closing
+                ? 200
+                : 150;
+
+        lastEmittedHeight = keyboardHeight;
+
+        controller.add({
+          'height': keyboardHeight,
+          'duration': duration,
+        });
+      }
+    });
+  }
+
+  // Listen to visualViewport resize events
+  web.window.visualViewport?.addEventListener(
+      'resize',
+      ((web.Event event) {
+        checkKeyboardHeight();
+      }).toJS);
+
+  // Also listen to window resize as backup
+  web.window.addEventListener(
+      'resize',
+      ((web.Event event) {
+        checkKeyboardHeight();
+      }).toJS);
+
+  return controller.stream;
+}
+
 // Original visualViewport implementation for Safari and fallback
 Stream<Map<String, dynamic>> _visualViewportStream() {
   final controller = StreamController<Map<String, dynamic>>.broadcast();
-
-  double? baselineHeight; // visualViewport height when keyboard closed
-  double lastEmittedHeight = 0;
-  bool hasEstablishedBaseline = false;
 
   // Check if we're on Android
   final userAgent = web.window.navigator.userAgent.toLowerCase();
   final isAndroid = userAgent.contains('android');
 
-  // Initialize baseline with current viewport height
-  // This should be the height without keyboard
-  if (web.window.visualViewport != null) {
-    baselineHeight = web.window.visualViewport!.height.toDouble();
-    // On Android, use the window inner height as initial baseline
-    // as it's more stable than visualViewport
-    if (isAndroid) {
-      baselineHeight = web.window.innerHeight.toDouble();
-    }
-    hasEstablishedBaseline = true;
+  if (isAndroid) {
+    // Use a simpler, more reliable approach for Android
+    return _androidChromeStream();
   }
+
+  // Original implementation for non-Android devices
+  double? baselineHeight; // visualViewport height when keyboard closed
+  double lastEmittedHeight = 0;
 
   web.window.visualViewport?.addEventListener(
       'resize',
@@ -193,26 +292,11 @@ Stream<Map<String, dynamic>> _visualViewportStream() {
 
         final currentHeight = vv.height.toDouble();
 
-        // For Android, be more conservative about updating baseline
-        if (isAndroid && hasEstablishedBaseline) {
-          // Only update baseline if:
-          // 1. Current height is larger (keyboard closing)
-          // 2. AND the difference is significant (> 100px)
-          // 3. AND we previously detected a keyboard (lastEmittedHeight > 0)
-          if (currentHeight > (baselineHeight ?? 0) &&
-              (currentHeight - (baselineHeight ?? 0)) > 100 &&
-              lastEmittedHeight > 0) {
-            baselineHeight = currentHeight;
-          }
-        } else if (!isAndroid) {
-          // Original logic for non-Android devices
-          if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
-            baselineHeight = currentHeight;
-          }
+        // Establish baseline (largest observed height) when no keyboard.
+        if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
+          baselineHeight = currentHeight;
         }
-
-        // Use the established baseline
-        final base = baselineHeight ?? currentHeight;
+        final base = (baselineHeight ?? currentHeight).toDouble();
         final obscured = (base - currentHeight).clamp(0, base);
 
         // Heuristic filter: ignore tiny changes (< 40 logical px)
