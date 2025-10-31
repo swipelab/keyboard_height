@@ -353,8 +353,23 @@ Stream<Map<String, dynamic>> _fallbackStream() {
   print('fallback keyboard stream');
   final controller = StreamController<Map<String, dynamic>>.broadcast();
 
+  // Check if we're on Android
+  final userAgent = web.window.navigator.userAgent.toLowerCase();
+  final isAndroid = userAgent.contains('android');
+
   double? baselineHeight;
   double lastEmittedHeight = 0;
+  Timer? stabilizationTimer;
+  bool isStabilizing = false;
+
+  // Initialize baseline with current height
+  if (web.window.visualViewport != null) {
+    baselineHeight = web.window.visualViewport!.height.toDouble();
+    print('Initial baseline height: $baselineHeight');
+  } else {
+    baselineHeight = web.window.innerHeight.toDouble();
+    print('Initial baseline height (window): $baselineHeight');
+  }
 
   // Try visualViewport first, fallback to window resize
   if (web.window.visualViewport != null) {
@@ -363,31 +378,86 @@ Stream<Map<String, dynamic>> _fallbackStream() {
         ((web.Event event) {
           final vv = web.window.visualViewport!;
           final currentHeight = vv.height.toDouble();
+          final windowHeight = web.window.innerHeight.toDouble();
 
-          // Establish baseline (largest observed height) when no keyboard.
-          if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
-            baselineHeight = currentHeight;
-          }
-          final base = (baselineHeight ?? currentHeight).toDouble();
-          final obscured = (base - currentHeight).clamp(0, base);
+          print('visualViewport resize: current=$currentHeight, baseline=$baselineHeight, window=$windowHeight');
 
-          // Heuristic filter: ignore tiny changes (< 40 logical px)
-          final isKeyboardLikely = obscured > 40;
-          final keyboardHeight = (isKeyboardLikely ? obscured : 0).toDouble();
+          // For Android, use a more conservative baseline update strategy
+          if (isAndroid) {
+            // Cancel any pending stabilization
+            stabilizationTimer?.cancel();
 
-          if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
-            final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-            final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
-            final duration = opening
-                ? 250
-                : closing
-                    ? 200
-                    : 150;
-            lastEmittedHeight = keyboardHeight;
-            controller.add({
-              'height': keyboardHeight,
-              'duration': duration,
-            });
+            // Only update baseline when:
+            // 1. We don't have a baseline yet
+            // 2. OR the height increased significantly (keyboard closing) AND we're not in a transition
+            if (baselineHeight == null) {
+              baselineHeight = currentHeight;
+              print('Setting initial baseline: $baselineHeight');
+            } else if (!isStabilizing &&
+                       currentHeight > baselineHeight! + 50 &&
+                       lastEmittedHeight > 0) {
+              // Keyboard seems to be closing, but wait for stabilization
+              isStabilizing = true;
+              stabilizationTimer = Timer(const Duration(milliseconds: 300), () {
+                // After stabilization, check if we should update baseline
+                final stabilizedHeight = web.window.visualViewport?.height.toDouble() ?? currentHeight;
+                if (stabilizedHeight > baselineHeight! && lastEmittedHeight == 0) {
+                  baselineHeight = stabilizedHeight;
+                  print('Baseline updated after stabilization: $baselineHeight');
+                }
+                isStabilizing = false;
+              });
+            }
+
+            // Use the established baseline for calculation
+            final obscured = ((baselineHeight ?? currentHeight) - currentHeight).clamp(0.0, baselineHeight ?? currentHeight);
+            final isKeyboardLikely = obscured > 40;
+            final keyboardHeight = isKeyboardLikely ? obscured : 0.0;
+
+            print('Android calculation: obscured=$obscured, keyboardHeight=$keyboardHeight');
+
+            // Only emit if there's a meaningful change
+            if ((keyboardHeight - lastEmittedHeight).abs() > 5) {
+              final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+              final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
+              final duration = opening
+                  ? 250
+                  : closing
+                      ? 200
+                      : 150;
+
+              print('Emitting height: $keyboardHeight (was: $lastEmittedHeight)');
+              lastEmittedHeight = keyboardHeight;
+              controller.add({
+                'height': keyboardHeight,
+                'duration': duration,
+              });
+            }
+          } else {
+            // Original logic for non-Android
+            if (baselineHeight == null || currentHeight > (baselineHeight ?? 0)) {
+              baselineHeight = currentHeight;
+            }
+            final base = (baselineHeight ?? currentHeight).toDouble();
+            final obscured = (base - currentHeight).clamp(0, base);
+
+            final isKeyboardLikely = obscured > 40;
+            final keyboardHeight = (isKeyboardLikely ? obscured : 0).toDouble();
+
+            if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
+              final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
+              final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
+              final duration = opening
+                  ? 250
+                  : closing
+                      ? 200
+                      : 150;
+              lastEmittedHeight = keyboardHeight;
+              controller.add({
+                'height': keyboardHeight,
+                'duration': duration,
+              });
+            }
           }
         }).toJS);
   } else {
