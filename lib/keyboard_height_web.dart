@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
-import 'dart:ui' as ui;
-import 'package:flutter/widgets.dart';
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 import 'package:keyboard_height/src/platform_interface/keyboard_height_platform_interface.dart';
 import 'package:web/web.dart' as web;
@@ -43,51 +41,23 @@ Stream<Map<String, dynamic>> _keyboardHeightEventStream() {
     return const Stream.empty();
   }
 
-  final isSafari = _isSafari();
-
-
-  if (isSafari) {
-    return _safariStream();
-  }
-
-  // Use Virtual Keyboard API for desktop Chrome/Firefox if available
+  Stream<Map<String, dynamic>>? stream;
+  // Use Virtual Keyboard API if available
   if (_supportsVirtualKeyboardAPI()) {
-    return _virtualKeyboardAPIStream();
+    stream = _virtualKeyboardAPIStream();
   }
 
-  //  // Check browser type
-  // final userAgent = web.window.navigator.userAgent.toLowerCase();
-  // final isAndroidChrome = userAgent.contains('android') && userAgent.contains('chrome');
-  //  // Route to appropriate implementation
-  // if (isAndroidChrome) {
-  //   return _androidChromeStream();
-  // }
+  if (stream == null && _isSafari()) {
+    stream = _safariStream();
+  }
 
-
-  // Fall back to generic implementation
-  return _fallbackStream();
+  return stream ?? const Stream.empty();
 }
 
 // Virtual Keyboard API implementation for Chrome/Firefox
-Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
-  print('virtual keyboard stream');
+Stream<Map<String, dynamic>>? _virtualKeyboardAPIStream() {
   final controller = StreamController<Map<String, dynamic>>.broadcast();
   double previousHeight = 0;
-  DateTime? lastEventTime;
-  int eventCount = 0;
-
-  // Check if we're on Android
-  final userAgent = web.window.navigator.userAgent.toLowerCase();
-  final isAndroid = userAgent.contains('android');
-
-  // Get device pixel ratio for Android Chrome
-  final devicePixelRatio = web.window.devicePixelRatio;
-
-  // For Android, use fallback stream instead due to Virtual Keyboard API issues
-  if (isAndroid) {
-    print('Android detected, using fallback stream instead of Virtual Keyboard API');
-    return _fallbackStream();
-  }
 
   // Enable the Virtual Keyboard API overlay
   try {
@@ -98,7 +68,7 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
     }
   } catch (e) {
     // If we can't enable overlay, fall back to generic implementation
-    return _fallbackStream();
+    return null;
   }
 
   // Listen to geometrychange event
@@ -110,16 +80,6 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
       virtualKeyboard.callMethod('addEventListener'.toJS,
         'geometrychange'.toJS,
         ((JSObject event) {
-          eventCount++;
-
-          // Debounce rapid successive events
-          final now = DateTime.now();
-          if (lastEventTime != null &&
-              now.difference(lastEventTime!).inMilliseconds < 100) {
-            print('Skipping rapid event #$eventCount (within 100ms)');
-            return;
-          }
-          lastEventTime = now;
 
           // Get the keyboard rect from the event
           final boundingRect = event['boundingRect'] as JSObject?;
@@ -132,18 +92,12 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
             if (height != null) {
               rawHeight = (height as JSNumber).toDartDouble;
               keyboardHeight = rawHeight;
-
-              // Debug logging
-              final viewportHeight = web.window.innerHeight.toDouble();
-              final visualViewportHeight = web.window.visualViewport?.height.toDouble() ?? 0;
-              print('Event #$eventCount: rawHeight=$rawHeight, windowHeight=$viewportHeight, visualViewportHeight=$visualViewportHeight, devicePixelRatio=$devicePixelRatio');
             }
           }
 
           // Additional sanity check: keyboard shouldn't be more than 60% of viewport
           final maxReasonableHeight = web.window.innerHeight * 0.6;
           if (keyboardHeight > maxReasonableHeight) {
-            print('Height unreasonable: $keyboardHeight > $maxReasonableHeight (60% of viewport)');
             // Don't return, just clamp it
             keyboardHeight = maxReasonableHeight;
           }
@@ -158,7 +112,6 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
                     ? 200
                     : 150;
 
-            print('Emitting height change: $previousHeight -> $keyboardHeight (opening=$opening, closing=$closing)');
             previousHeight = keyboardHeight;
             controller.add({
               'height': keyboardHeight,
@@ -169,117 +122,7 @@ Stream<Map<String, dynamic>> _virtualKeyboardAPIStream() {
       );
     }
   } catch (e) {
-    print('Error setting up Virtual Keyboard API: $e');
-    // If we can't add the event listener, fall back to generic implementation
-    return _fallbackStream();
-  }
-
-  return controller.stream;
-}
-
-// Specialized implementation for Android Chrome
-Stream<Map<String, dynamic>> _androidChromeStream() {
-  final controller = StreamController<Map<String, dynamic>>.broadcast();
-
-  double lastEmittedHeight = 0;
-  Timer? debounceTimer;
-
-  // Track focus state
-  bool isInputFocused = false;
-
-  // Listen to focus events to track input state
-  web.window.addEventListener(
-      'focusin',
-      ((web.Event event) {
-        final target = event.target;
-        if (target.isA<web.HTMLInputElement>() ||
-            target.isA<web.HTMLTextAreaElement>()) {
-          isInputFocused = true;
-        }
-      }).toJS);
-
-  web.window.addEventListener(
-      'focusout',
-      ((web.Event event) {
-        final target = event.target;
-        if (target.isA<web.HTMLInputElement>() ||
-            target.isA<web.HTMLTextAreaElement>()) {
-          isInputFocused = false;
-          // Immediately emit 0 height when input loses focus
-          if (lastEmittedHeight > 0) {
-            lastEmittedHeight = 0;
-            controller.add({
-              'height': 0.0,
-              'duration': 200,
-            });
-          }
-        }
-      }).toJS);
-
-  // Use both visualViewport and window resize events for Android
-  void checkKeyboardHeight() {
-    debounceTimer?.cancel();
-    debounceTimer = Timer(const Duration(milliseconds: 50), () {
-      final vv = web.window.visualViewport;
-      if (vv == null) return;
-
-      final visualViewportHeight = vv.height.toDouble();
-      final windowHeight = web.window.innerHeight.toDouble();
-
-      // Calculate keyboard height as difference between window and visual viewport
-      // This is more reliable on Android than trying to track baseline
-      double keyboardHeight = 0;
-
-      if (isInputFocused) {
-        // When input is focused, calculate keyboard height
-        // The keyboard height is the difference between window height and visual viewport
-        final heightDiff = windowHeight - visualViewportHeight;
-
-        // Only consider it a keyboard if the difference is significant
-        if (heightDiff > 40) {
-          keyboardHeight = heightDiff;
-
-          // Sanity check - keyboard shouldn't be more than 50% of window height
-          if (keyboardHeight > windowHeight * 0.5) {
-            keyboardHeight = windowHeight * 0.5;
-          }
-        }
-      }
-
-      // Only emit if there's a meaningful change
-      if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
-        final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-        final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
-        final duration = opening
-            ? 250
-            : closing
-                ? 200
-                : 150;
-
-        lastEmittedHeight = keyboardHeight;
-
-        controller.add({
-          'height': keyboardHeight,
-          'duration': duration,
-        });
-      }
-    });
-  }
-
-  // Listen to visualViewport resize if available, otherwise window resize
-  if (web.window.visualViewport != null) {
-    web.window.visualViewport!.addEventListener(
-        'resize',
-        ((web.Event event) {
-          checkKeyboardHeight();
-        }).toJS);
-  } else {
-    // Fallback to window resize if visualViewport is not available
-    web.window.addEventListener(
-        'resize',
-        ((web.Event event) {
-          checkKeyboardHeight();
-        }).toJS);
+    null;
   }
 
   return controller.stream;
@@ -287,7 +130,6 @@ Stream<Map<String, dynamic>> _androidChromeStream() {
 
 // Safari-specific implementation with focusout workaround
 Stream<Map<String, dynamic>> _safariStream() {
-  print('safari stream');
   final controller = StreamController<Map<String, dynamic>>.broadcast();
 
   double? baselineHeight; // visualViewport height when keyboard closed
@@ -346,149 +188,6 @@ Stream<Map<String, dynamic>> _safariStream() {
           }
         }).toJS);
   }
-
-  return controller.stream;
-}
-
-// Helper class to observe metrics changes
-class _MetricsObserver extends WidgetsBindingObserver {
-  final VoidCallback onMetricsChanged;
-
-  _MetricsObserver(this.onMetricsChanged);
-
-  @override
-  void didChangeMetrics() {
-    onMetricsChanged();
-  }
-}
-
-// Generic fallback implementation using Flutter's viewInsets
-Stream<Map<String, dynamic>> _fallbackStream() {
-  print('fallback keyboard stream (using Flutter viewInsets)');
-  final controller = StreamController<Map<String, dynamic>>.broadcast();
-
-  double lastEmittedHeight = 0;
-  _MetricsObserver? observer;
-  double? initialViewportHeight;
-  double? lastKnownViewportHeight;
-
-  // Get the primary view to access viewInsets
-  ui.FlutterView? getPrimaryView() {
-    try {
-      // Try to get the implicit view first (newer Flutter versions)
-      final implicitView = ui.PlatformDispatcher.instance.implicitView;
-      if (implicitView != null) return implicitView;
-
-      // Fallback to first view in the list
-      final views = ui.PlatformDispatcher.instance.views;
-      if (views.isNotEmpty) return views.first;
-
-      // No view available
-      return null;
-    } catch (e) {
-      print('Error getting primary view: $e');
-      return null;
-    }
-  }
-
-  void checkKeyboardHeight() {
-    final view = getPrimaryView();
-    if (view == null) {
-      print('No Flutter view available');
-      return;
-    }
-
-    // Get the current viewport dimensions
-    final currentViewportHeight = view.physicalSize.height / view.devicePixelRatio;
-    final viewInsetsBottom = view.viewInsets.bottom / view.devicePixelRatio;
-
-    // Initialize the baseline viewport height (when keyboard is not shown)
-    if (initialViewportHeight == null) {
-      // On first run, if viewInsets is 0, we can use current height as baseline
-      if (viewInsetsBottom < 1) {
-        initialViewportHeight = currentViewportHeight;
-        lastKnownViewportHeight = currentViewportHeight;
-        print('Initial viewport height set to: $initialViewportHeight');
-      }
-    } else if (viewInsetsBottom < 1 && currentViewportHeight > lastKnownViewportHeight!) {
-      // Update baseline if viewport grew and no keyboard is showing
-      initialViewportHeight = currentViewportHeight;
-      print('Updated baseline viewport height to: $initialViewportHeight');
-    }
-
-    // Calculate keyboard height
-    double keyboardHeight = 0;
-
-    if (initialViewportHeight != null) {
-      // Method 1: Use viewInsets if available and reasonable
-      if (viewInsetsBottom > 0) {
-        keyboardHeight = viewInsetsBottom;
-      }
-      // Method 2: If viewport shrank, calculate difference from baseline
-      else if (currentViewportHeight < initialViewportHeight! - 40) {
-        keyboardHeight = initialViewportHeight! - currentViewportHeight;
-      }
-    } else {
-      // Fallback: just use viewInsets
-      keyboardHeight = viewInsetsBottom;
-    }
-
-    lastKnownViewportHeight = currentViewportHeight;
-
-    print('Viewport: current=$currentViewportHeight, initial=$initialViewportHeight, viewInsets=$viewInsetsBottom, calculated keyboard=$keyboardHeight');
-
-    // Only emit if there's a meaningful change
-    if ((keyboardHeight - lastEmittedHeight).abs() > 1) {
-      final opening = lastEmittedHeight == 0 && keyboardHeight > 0;
-      final closing = lastEmittedHeight > 0 && keyboardHeight == 0;
-      final duration = opening
-          ? 250
-          : closing
-              ? 200
-              : 150;
-
-      print('Emitting keyboard height: $keyboardHeight (was: $lastEmittedHeight)');
-      lastEmittedHeight = keyboardHeight;
-      controller.add({
-        'height': keyboardHeight,
-        'duration': duration,
-      });
-    }
-  }
-
-  // Create and register the metrics observer
-  observer = _MetricsObserver(() {
-    print('onMetricsChanged fired');
-    checkKeyboardHeight();
-  });
-
-  // Ensure WidgetsBinding is initialized
-  WidgetsBinding.instance.addObserver(observer);
-
-  // Also listen to visualViewport resize for immediate response
-  // This can fire before Flutter's metrics update on some browsers
-  if (web.window.visualViewport != null) {
-    web.window.visualViewport!.addEventListener(
-        'resize',
-        ((web.Event event) {
-          // Small delay to let Flutter update its metrics
-          Future.delayed(const Duration(milliseconds: 50), () {
-            checkKeyboardHeight();
-          });
-        }).toJS);
-  }
-
-  // Cleanup listeners when stream is closed
-  controller.onCancel = () {
-    // Remove the metrics observer
-    if (observer != null) {
-      WidgetsBinding.instance.removeObserver(observer!);
-      observer = null;
-    }
-  };
-
-  // Check initial state
-  checkKeyboardHeight();
 
   return controller.stream;
 }
