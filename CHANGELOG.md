@@ -1,3 +1,6 @@
+## [1.0.8]
+- Fix MacOS build
+
 ## [1.0.6]
 - Finished Web (VirtualKeyboard API, Safari and Fallback for older browsers)
 
