@@ -2,6 +2,10 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:keyboard_height/src/platform_interface/keyboard_height_platform_interface.dart';
 
+export 'package:keyboard_height/keyboard_height_macos.dart';
+export 'package:keyboard_height/keyboard_height_linux.dart';
+export 'package:keyboard_height/keyboard_height_windows.dart';
+
 class KeyboardHeight with ChangeNotifier {
   KeyboardHeight._() {
     _sub = KeyboardHeightPlatform.instance
